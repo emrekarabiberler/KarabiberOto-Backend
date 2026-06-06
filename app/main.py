@@ -11,9 +11,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Serve Admin Panel Static Files
-BASE_DIR = Path(__file__).resolve().parents[2]
-app.mount("/admin", StaticFiles(directory=BASE_DIR / "admin-web", html=True), name="admin")
+BASE_DIR = Path(__file__).resolve().parents[1]
+ADMIN_WEB_DIR = BASE_DIR / "admin-web"
+
+if ADMIN_WEB_DIR.exists():
+    app.mount("/admin", StaticFiles(directory=ADMIN_WEB_DIR, html=True), name="admin")
 
 # CORS Middleware for iOS and web access
 app.add_middleware(
@@ -32,3 +34,7 @@ app.include_router(ai.router, prefix="/ai", tags=["AI Services"])
 @app.get("/")
 async def root():
     return {"message": "KarabiberOto Backend API is running"}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
