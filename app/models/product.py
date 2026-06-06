@@ -1,19 +1,8 @@
-from pydantic import BaseModel, Field, BeforeValidator
-from typing import Optional, Annotated
-from bson import ObjectId
-
-# Custom type for handling MongoDB ObjectId in Pydantic v2
-def validate_object_id(v: any) -> ObjectId:
-    if isinstance(v, ObjectId):
-        return v
-    if isinstance(v, str) and ObjectId.is_valid(v):
-        return ObjectId(v)
-    raise ValueError("Invalid ObjectId")
-
-PyObjectId = Annotated[str, BeforeValidator(validate_object_id)]
+from pydantic import BaseModel, Field
+from typing import Optional
 
 class ProductModel(BaseModel):
-    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    id: Optional[str] = Field(default=None, alias="_id")
     name: str
     description: str
     price: float
@@ -27,8 +16,6 @@ class ProductModel(BaseModel):
 
     class Config:
         populate_by_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str}
         json_schema_extra = {
             "example": {
                 "name": "Royal Velvet Matte",
