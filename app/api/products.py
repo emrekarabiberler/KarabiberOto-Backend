@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+import os
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
 from typing import List
 from app.database import get_database
 from app.models.product import ProductModel
@@ -28,6 +31,48 @@ async def create_product(product: ProductModel = Body(...), db = Depends(get_dat
     result = await db["products"].insert_one(product_dict)
     new_product = await db["products"].find_one({"_id": result.inserted_id})
     return serialize_product(new_product)
+
+@router.post("/upload-image")
+async def upload_product_image(file: UploadFile = File(...)):
+    try:
+        import cloudinary
+        import cloudinary.uploader
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Cloudinary package is not installed") from exc
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=422, detail="Only image files are allowed")
+
+    if not all([
+        os.getenv("CLOUDINARY_CLOUD_NAME"),
+        os.getenv("CLOUDINARY_API_KEY"),
+        os.getenv("CLOUDINARY_API_SECRET"),
+    ]):
+        raise HTTPException(status_code=500, detail="Cloudinary credentials are not configured")
+
+    folder = os.getenv("CLOUDINARY_FOLDER", "karabiberoto/products")
+    cloudinary.config(
+        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+        api_key=os.getenv("CLOUDINARY_API_KEY"),
+        api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        secure=True,
+    )
+
+    try:
+        upload_result = cloudinary.uploader.upload(
+            file.file,
+            folder=folder,
+            public_id=f"product-{uuid4()}",
+            resource_type="image",
+            overwrite=False,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {exc}") from exc
+
+    return {
+        "url": upload_result["secure_url"],
+        "public_id": upload_result["public_id"],
+    }
 
 @router.get("/barcode/{barcode_id}", response_model=ProductModel)
 async def get_product_by_barcode(barcode_id: str, db = Depends(get_database)):

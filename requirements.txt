@@ -9,6 +9,7 @@ python-jose[cryptography]
 passlib[bcrypt]
 httpx
 python-dotenv
+cloudinary
 rembg
 pillow
 numpy
