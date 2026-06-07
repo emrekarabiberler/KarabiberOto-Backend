@@ -36,6 +36,10 @@ class UserResponse(BaseModel):
     name: str
 
 
+class AdminUserResponse(UserResponse):
+    created_at: Optional[datetime] = None
+
+
 def normalize_email(email: str) -> str:
     normalized = email.strip().lower()
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized):
@@ -48,6 +52,15 @@ def serialize_user(user) -> UserResponse:
         id=str(user["_id"]),
         email=user["email"],
         name=user["name"],
+    )
+
+
+def serialize_admin_user(user) -> AdminUserResponse:
+    return AdminUserResponse(
+        id=str(user["_id"]),
+        email=user["email"],
+        name=user["name"],
+        created_at=user.get("created_at"),
     )
 
 
@@ -153,3 +166,9 @@ async def login(request: AuthRequest, db=Depends(get_database)):
 @router.get("/me", response_model=UserResponse)
 async def me(current_user=Depends(get_current_user)):
     return serialize_user(current_user)
+
+
+@router.get("/users", response_model=list[AdminUserResponse])
+async def list_users(db=Depends(get_database)):
+    users = await db["users"].find().to_list(500)
+    return [serialize_admin_user(user) for user in users]
