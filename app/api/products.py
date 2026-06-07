@@ -4,6 +4,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
 from typing import List
 from app.database import get_database
+from app.models.category import CategoryModel
 from app.models.product import ProductModel
 from bson import ObjectId
 
@@ -13,6 +14,11 @@ def serialize_product(product):
     if product and "_id" in product:
         product["_id"] = str(product["_id"])
     return product
+
+def serialize_category(category):
+    if category and "_id" in category:
+        category.pop("_id", None)
+    return category
 
 @router.get("/", response_model=List[ProductModel])
 async def get_products(db = Depends(get_database)):
@@ -81,11 +87,19 @@ async def get_product_by_barcode(barcode_id: str, db = Depends(get_database)):
         raise HTTPException(status_code=404, detail="Product not found")
     return serialize_product(product)
 
-@router.get("/categories")
-async def get_categories():
-    # This could also be a separate collection, but for now returning static list
-    return [
-        {"id": "interior", "name": "İç Cephe"},
-        {"id": "exterior", "name": "Dış Cephe"},
-        {"id": "primer", "name": "Astarlar"}
-    ]
+@router.get("/categories", response_model=List[CategoryModel])
+async def get_categories(db = Depends(get_database)):
+    categories = await db["categories"].find().to_list(100)
+    return [serialize_category(category) for category in categories]
+
+@router.post("/categories", response_model=CategoryModel)
+async def create_category(category: CategoryModel = Body(...), db = Depends(get_database)):
+    existing = await db["categories"].find_one({"id": category.id})
+    if existing:
+        raise HTTPException(status_code=409, detail="Category already exists")
+
+    category_dict = category.model_dump()
+    category_dict["_id"] = category.id
+    await db["categories"].insert_one(category_dict)
+    new_category = await db["categories"].find_one({"id": category.id})
+    return serialize_category(new_category)
