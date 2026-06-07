@@ -1,9 +1,11 @@
 import base64
+import io
 import os
 from typing import Optional
 
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from PIL import Image, ImageEnhance, ImageFilter
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -30,11 +32,80 @@ async def recolor_car(
         raise HTTPException(status_code=422, detail="Only image files are allowed")
 
     image_bytes = await file.read()
-    provider = os.getenv("AI_IMAGE_PROVIDER", "pollinations").lower()
+    provider = os.getenv("AI_IMAGE_PROVIDER", "local").lower()
     if provider == "gemini":
         return await recolor_with_gemini(image_bytes, file.content_type, color_name, color_hex)
+    if provider == "pollinations":
+        return await recolor_with_pollinations(image_bytes, file.filename, file.content_type, color_name, color_hex)
 
-    return await recolor_with_pollinations(image_bytes, file.filename, file.content_type, color_name, color_hex)
+    return recolor_locally(image_bytes, color_name, color_hex)
+
+
+def recolor_locally(image_bytes: bytes, color_name: str, color_hex: str):
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Image could not be opened") from exc
+
+    image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+    rgb = image.convert("RGB")
+    grayscale = rgb.convert("L")
+    color = Image.new("RGB", rgb.size, color_hex)
+
+    tinted = Image.blend(
+        Image.merge("RGB", (grayscale, grayscale, grayscale)),
+        color,
+        0.58,
+    )
+    tinted = ImageEnhance.Contrast(tinted).enhance(1.08)
+    tinted = ImageEnhance.Sharpness(tinted).enhance(1.05)
+
+    mask = build_vehicle_like_mask(rgb)
+    result = Image.composite(tinted, rgb, mask).convert("RGBA")
+    result.putalpha(image.getchannel("A"))
+
+    buffer = io.BytesIO()
+    result.save(buffer, format="PNG", optimize=True)
+
+    return {
+        "image_base64": base64.b64encode(buffer.getvalue()).decode("utf-8"),
+        "mime_type": "image/png",
+        "text": f"Yerel ücretsiz renk önizleme tamamlandı: {color_name}",
+    }
+
+
+def build_vehicle_like_mask(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    source = image.convert("RGB")
+    pixels = source.load()
+    mask = Image.new("L", source.size, 0)
+    mask_pixels = mask.load()
+
+    for y in range(height):
+        vertical_focus = 0.20 <= y / height <= 0.86
+        if not vertical_focus:
+            continue
+
+        for x in range(width):
+            horizontal_focus = 0.05 <= x / width <= 0.95
+            if not horizontal_focus:
+                continue
+
+            r, g, b = pixels[x, y]
+            max_c = max(r, g, b)
+            min_c = min(r, g, b)
+            brightness = (r + g + b) / 3
+            saturation = 0 if max_c == 0 else (max_c - min_c) / max_c
+
+            is_body_like = (
+                35 < brightness < 245
+                and saturation < 0.42
+                and not (r > 210 and g > 210 and b > 210)
+            )
+            if is_body_like:
+                mask_pixels[x, y] = 185
+
+    return mask.filter(ImageFilter.GaussianBlur(radius=max(2, min(width, height) // 160)))
 
 
 async def recolor_with_pollinations(
