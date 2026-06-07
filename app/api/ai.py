@@ -33,12 +33,79 @@ async def recolor_car(
 
     image_bytes = await file.read()
     provider = os.getenv("AI_IMAGE_PROVIDER", "local").lower()
+    if provider == "openai":
+        return await recolor_with_openai(image_bytes, file.filename, file.content_type, color_name, color_hex)
     if provider == "gemini":
         return await recolor_with_gemini(image_bytes, file.content_type, color_name, color_hex)
     if provider == "pollinations":
         return await recolor_with_pollinations(image_bytes, file.filename, file.content_type, color_name, color_hex)
 
     return recolor_locally(image_bytes, color_name, color_hex)
+
+
+async def recolor_with_openai(
+    image_bytes: bytes,
+    file_name: Optional[str],
+    content_type: str,
+    color_name: str,
+    color_hex: str,
+):
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
+
+    model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1-mini")
+    prompt = (
+        "Edit this car photo. Keep the same vehicle, background, camera angle, lighting, "
+        "wheels, windows, shadows, reflections, and all details. Change only the car body "
+        f"paint color to {color_name} ({color_hex}). Make the output photorealistic and "
+        "suitable for an automotive paint preview."
+    )
+
+    files = {
+        "image": (file_name or "vehicle.png", image_bytes, content_type),
+    }
+    data = {
+        "model": model,
+        "prompt": prompt,
+        "size": os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
+        "quality": os.getenv("OPENAI_IMAGE_QUALITY", "low"),
+    }
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/images/edits",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files=files,
+            data=data,
+        )
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {response.text}")
+
+    result = response.json()
+    generated = (result.get("data") or [{}])[0]
+    b64_json = generated.get("b64_json")
+    if b64_json:
+        return {
+            "image_base64": b64_json,
+            "mime_type": "image/png",
+            "text": "OpenAI image edit completed",
+        }
+
+    image_url = generated.get("url")
+    if image_url:
+        async with httpx.AsyncClient(timeout=60) as client:
+            image_response = await client.get(image_url)
+        if image_response.status_code >= 400:
+            raise HTTPException(status_code=502, detail="OpenAI returned an image URL that could not be downloaded")
+        return {
+            "image_base64": base64.b64encode(image_response.content).decode("utf-8"),
+            "mime_type": image_response.headers.get("content-type", "image/png"),
+            "text": "OpenAI image edit completed",
+        }
+
+    raise HTTPException(status_code=502, detail="OpenAI did not return an image")
 
 
 def recolor_locally(image_bytes: bytes, color_name: str, color_hex: str):
