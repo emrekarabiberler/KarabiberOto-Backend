@@ -1,5 +1,6 @@
 import base64
 import os
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -25,14 +26,91 @@ async def recolor_car(
     color_name: str = Form(...),
     color_hex: str = Form(...),
 ):
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
-
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=422, detail="Only image files are allowed")
 
     image_bytes = await file.read()
+    provider = os.getenv("AI_IMAGE_PROVIDER", "pollinations").lower()
+    if provider == "gemini":
+        return await recolor_with_gemini(image_bytes, file.content_type, color_name, color_hex)
+
+    return await recolor_with_pollinations(image_bytes, file.filename, file.content_type, color_name, color_hex)
+
+
+async def recolor_with_pollinations(
+    image_bytes: bytes,
+    file_name: Optional[str],
+    content_type: str,
+    color_name: str,
+    color_hex: str,
+):
+    api_key = os.getenv("POLLINATIONS_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="POLLINATIONS_API_KEY is not configured")
+
+    model = os.getenv("POLLINATIONS_IMAGE_MODEL", "kontext")
+    prompt = (
+        "Edit this car photo. Keep the exact same vehicle, background, camera angle, "
+        "lighting, wheels, windows, reflections, and all details. Change only the car "
+        f"body paint color to {color_name} ({color_hex}). Make it photorealistic and "
+        "suitable for an automotive paint preview."
+    )
+
+    files = {
+        "image": (file_name or "vehicle.jpg", image_bytes, content_type),
+    }
+    data = {
+        "prompt": prompt,
+        "model": model,
+        "size": os.getenv("POLLINATIONS_IMAGE_SIZE", "1024x1024"),
+        "response_format": "b64_json",
+    }
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(
+            "https://gen.pollinations.ai/v1/images/edits",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files=files,
+            data=data,
+        )
+
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Pollinations request failed: {response.text}")
+
+        result = response.json()
+        generated = (result.get("data") or [{}])[0]
+        b64_json = generated.get("b64_json")
+        if b64_json:
+            return {
+                "image_base64": b64_json,
+                "mime_type": "image/png",
+                "text": "Pollinations image edit completed",
+            }
+
+        image_url = generated.get("url")
+        if image_url:
+            image_response = await client.get(image_url)
+            if image_response.status_code >= 400:
+                raise HTTPException(status_code=502, detail="Pollinations returned an image URL that could not be downloaded")
+            return {
+                "image_base64": base64.b64encode(image_response.content).decode("utf-8"),
+                "mime_type": image_response.headers.get("content-type", "image/png"),
+                "text": "Pollinations image edit completed",
+            }
+
+    raise HTTPException(status_code=502, detail="Pollinations did not return an image")
+
+
+async def recolor_with_gemini(
+    image_bytes: bytes,
+    content_type: str,
+    color_name: str,
+    color_hex: str,
+):
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
+
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
     model = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
     prompt = (
@@ -49,7 +127,7 @@ async def recolor_car(
                     {"text": prompt},
                     {
                         "inline_data": {
-                            "mime_type": file.content_type,
+                            "mime_type": content_type,
                             "data": image_base64,
                         }
                     },
