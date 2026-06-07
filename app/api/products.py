@@ -1,4 +1,5 @@
 import os
+import re
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
@@ -20,6 +21,73 @@ def serialize_category(category):
         category.pop("_id", None)
     return category
 
+def slugify(value: str) -> str:
+    value = value.strip().lower()
+    replacements = {
+        "ğ": "g",
+        "ü": "u",
+        "ş": "s",
+        "ı": "i",
+        "ö": "o",
+        "ç": "c",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = value.strip("-")
+    return value or f"category-{uuid4().hex[:8]}"
+
+async def make_unique_category_id(db, name: str) -> str:
+    base_id = slugify(name)
+    candidate = base_id
+    suffix = 2
+
+    while await db["categories"].find_one({"id": candidate}):
+        candidate = f"{base_id}-{suffix}"
+        suffix += 1
+
+    return candidate
+
+async def upload_to_cloudinary(file: UploadFile, folder: str, public_id_prefix: str):
+    try:
+        import cloudinary
+        import cloudinary.uploader
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Cloudinary package is not installed") from exc
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=422, detail="Only image files are allowed")
+
+    if not all([
+        os.getenv("CLOUDINARY_CLOUD_NAME"),
+        os.getenv("CLOUDINARY_API_KEY"),
+        os.getenv("CLOUDINARY_API_SECRET"),
+    ]):
+        raise HTTPException(status_code=500, detail="Cloudinary credentials are not configured")
+
+    cloudinary.config(
+        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+        api_key=os.getenv("CLOUDINARY_API_KEY"),
+        api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        secure=True,
+    )
+
+    try:
+        upload_result = cloudinary.uploader.upload(
+            file.file,
+            folder=folder,
+            public_id=f"{public_id_prefix}-{uuid4()}",
+            resource_type="image",
+            overwrite=False,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {exc}") from exc
+
+    return {
+        "url": upload_result["secure_url"],
+        "public_id": upload_result["public_id"],
+    }
+
 @router.get("/", response_model=List[ProductModel])
 async def get_products(db = Depends(get_database)):
     products = await db["products"].find().to_list(100)
@@ -40,45 +108,8 @@ async def create_product(product: ProductModel = Body(...), db = Depends(get_dat
 
 @router.post("/upload-image")
 async def upload_product_image(file: UploadFile = File(...)):
-    try:
-        import cloudinary
-        import cloudinary.uploader
-    except ImportError as exc:
-        raise HTTPException(status_code=500, detail="Cloudinary package is not installed") from exc
-
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=422, detail="Only image files are allowed")
-
-    if not all([
-        os.getenv("CLOUDINARY_CLOUD_NAME"),
-        os.getenv("CLOUDINARY_API_KEY"),
-        os.getenv("CLOUDINARY_API_SECRET"),
-    ]):
-        raise HTTPException(status_code=500, detail="Cloudinary credentials are not configured")
-
     folder = os.getenv("CLOUDINARY_FOLDER", "karabiberoto/products")
-    cloudinary.config(
-        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-        api_key=os.getenv("CLOUDINARY_API_KEY"),
-        api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-        secure=True,
-    )
-
-    try:
-        upload_result = cloudinary.uploader.upload(
-            file.file,
-            folder=folder,
-            public_id=f"product-{uuid4()}",
-            resource_type="image",
-            overwrite=False,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Image upload failed: {exc}") from exc
-
-    return {
-        "url": upload_result["secure_url"],
-        "public_id": upload_result["public_id"],
-    }
+    return await upload_to_cloudinary(file, folder, "product")
 
 @router.get("/barcode/{barcode_id}", response_model=ProductModel)
 async def get_product_by_barcode(barcode_id: str, db = Depends(get_database)):
@@ -94,12 +125,15 @@ async def get_categories(db = Depends(get_database)):
 
 @router.post("/categories", response_model=CategoryModel)
 async def create_category(category: CategoryModel = Body(...), db = Depends(get_database)):
-    existing = await db["categories"].find_one({"id": category.id})
-    if existing:
-        raise HTTPException(status_code=409, detail="Category already exists")
-
     category_dict = category.model_dump()
-    category_dict["_id"] = category.id
+    category_dict["id"] = await make_unique_category_id(db, category.name)
+    category_dict["icon"] = category_dict.get("icon") or "tag.fill"
+    category_dict["_id"] = category_dict["id"]
     await db["categories"].insert_one(category_dict)
-    new_category = await db["categories"].find_one({"id": category.id})
+    new_category = await db["categories"].find_one({"id": category_dict["id"]})
     return serialize_category(new_category)
+
+@router.post("/categories/upload-image")
+async def upload_category_image(file: UploadFile = File(...)):
+    folder = os.getenv("CLOUDINARY_CATEGORY_FOLDER", "karabiberoto/categories")
+    return await upload_to_cloudinary(file, folder, "category")
