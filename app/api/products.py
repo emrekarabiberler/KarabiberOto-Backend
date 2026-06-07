@@ -123,6 +123,7 @@ async def get_categories(db = Depends(get_database)):
     categories = await db["categories"].find().to_list(100)
     return [serialize_category(category) for category in categories]
 
+@router.post("/categories/", response_model=CategoryModel, include_in_schema=False)
 @router.post("/categories", response_model=CategoryModel)
 async def create_category(category: CategoryModel = Body(...), db = Depends(get_database)):
     category_dict = category.model_dump()
@@ -133,11 +134,13 @@ async def create_category(category: CategoryModel = Body(...), db = Depends(get_
     new_category = await db["categories"].find_one({"id": category_dict["id"]})
     return serialize_category(new_category)
 
+@router.post("/categories/upload-image/", include_in_schema=False)
 @router.post("/categories/upload-image")
 async def upload_category_image(file: UploadFile = File(...)):
     folder = os.getenv("CLOUDINARY_CATEGORY_FOLDER", "karabiberoto/categories")
     return await upload_to_cloudinary(file, folder, "category")
 
+@router.put("/categories/{category_id}/", response_model=CategoryModel, include_in_schema=False)
 @router.put("/categories/{category_id}", response_model=CategoryModel)
 async def update_category(category_id: str, category: CategoryUpdateModel = Body(...), db = Depends(get_database)):
     update_data = category.model_dump()
@@ -152,6 +155,7 @@ async def update_category(category_id: str, category: CategoryUpdateModel = Body
     updated_category = await db["categories"].find_one({"id": category_id})
     return serialize_category(updated_category)
 
+@router.delete("/categories/{category_id}/", include_in_schema=False)
 @router.delete("/categories/{category_id}")
 async def delete_category(category_id: str, db = Depends(get_database)):
     result = await db["categories"].delete_one({"id": category_id})
