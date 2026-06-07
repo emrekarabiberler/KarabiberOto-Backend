@@ -30,3 +30,16 @@ class ProductModel(BaseModel):
                 "in_stock": True
             }
         }
+
+
+class ProductUpdateModel(BaseModel):
+    name: str
+    description: str
+    price: float
+    category_id: str
+    image_url: str
+    grade: str = ""
+    color_hex: str = "#FFFFFF"
+    product_type: str
+    barcode: Optional[str] = None
+    in_stock: bool = True

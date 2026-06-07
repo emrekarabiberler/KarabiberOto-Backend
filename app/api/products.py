@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
 from typing import List
 from app.database import get_database
 from app.models.category import CategoryModel, CategoryUpdateModel
-from app.models.product import ProductModel
+from app.models.product import ProductModel, ProductUpdateModel
 from bson import ObjectId
 
 router = APIRouter()
@@ -105,6 +105,36 @@ async def create_product(product: ProductModel = Body(...), db = Depends(get_dat
     result = await db["products"].insert_one(product_dict)
     new_product = await db["products"].find_one({"_id": result.inserted_id})
     return serialize_product(new_product)
+
+@router.put("/{product_id}/", response_model=ProductModel, include_in_schema=False)
+@router.put("/{product_id}", response_model=ProductModel)
+async def update_product(product_id: str, product: ProductUpdateModel = Body(...), db = Depends(get_database)):
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(status_code=422, detail="Invalid product id")
+
+    result = await db["products"].update_one(
+        {"_id": ObjectId(product_id)},
+        {"$set": product.model_dump()},
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    updated_product = await db["products"].find_one({"_id": ObjectId(product_id)})
+    return serialize_product(updated_product)
+
+@router.delete("/{product_id}/", include_in_schema=False)
+@router.delete("/{product_id}")
+async def delete_product(product_id: str, db = Depends(get_database)):
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(status_code=422, detail="Invalid product id")
+
+    result = await db["products"].delete_one({"_id": ObjectId(product_id)})
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    return {"ok": True}
 
 @router.post("/upload-image")
 async def upload_product_image(file: UploadFile = File(...)):
