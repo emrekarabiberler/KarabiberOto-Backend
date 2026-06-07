@@ -21,6 +21,13 @@ def serialize_category(category):
         category.pop("_id", None)
     return category
 
+def product_lookup_filter(product_id: str):
+    if ObjectId.is_valid(product_id):
+        return {"_id": ObjectId(product_id)}
+    if product_id.lower() in {"none", "null"}:
+        return {"_id": None}
+    return {"_id": product_id}
+
 def slugify(value: str) -> str:
     value = value.strip().lower()
     replacements = {
@@ -109,27 +116,23 @@ async def create_product(product: ProductModel = Body(...), db = Depends(get_dat
 @router.put("/{product_id}/", response_model=ProductModel, include_in_schema=False)
 @router.put("/{product_id}", response_model=ProductModel)
 async def update_product(product_id: str, product: ProductUpdateModel = Body(...), db = Depends(get_database)):
-    if not ObjectId.is_valid(product_id):
-        raise HTTPException(status_code=422, detail="Invalid product id")
+    lookup_filter = product_lookup_filter(product_id)
 
     result = await db["products"].update_one(
-        {"_id": ObjectId(product_id)},
+        lookup_filter,
         {"$set": product.model_dump()},
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    updated_product = await db["products"].find_one({"_id": ObjectId(product_id)})
+    updated_product = await db["products"].find_one(lookup_filter)
     return serialize_product(updated_product)
 
 @router.delete("/{product_id}/", include_in_schema=False)
 @router.delete("/{product_id}")
 async def delete_product(product_id: str, db = Depends(get_database)):
-    if not ObjectId.is_valid(product_id):
-        raise HTTPException(status_code=422, detail="Invalid product id")
-
-    result = await db["products"].delete_one({"_id": ObjectId(product_id)})
+    result = await db["products"].delete_one(product_lookup_filter(product_id))
 
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Product not found")
