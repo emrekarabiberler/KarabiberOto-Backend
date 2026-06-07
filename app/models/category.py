@@ -16,3 +16,8 @@ class CategoryModel(BaseModel):
                 "image_url": "https://example.com/category.jpg",
             }
         }
+
+
+class CategoryUpdateModel(BaseModel):
+    name: str
+    image_url: str = ""

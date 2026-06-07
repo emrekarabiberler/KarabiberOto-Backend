@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
 from typing import List
 from app.database import get_database
-from app.models.category import CategoryModel
+from app.models.category import CategoryModel, CategoryUpdateModel
 from app.models.product import ProductModel
 from bson import ObjectId
 
@@ -137,3 +137,31 @@ async def create_category(category: CategoryModel = Body(...), db = Depends(get_
 async def upload_category_image(file: UploadFile = File(...)):
     folder = os.getenv("CLOUDINARY_CATEGORY_FOLDER", "karabiberoto/categories")
     return await upload_to_cloudinary(file, folder, "category")
+
+@router.put("/categories/{category_id}", response_model=CategoryModel)
+async def update_category(category_id: str, category: CategoryUpdateModel = Body(...), db = Depends(get_database)):
+    update_data = category.model_dump()
+    result = await db["categories"].update_one(
+        {"id": category_id},
+        {"$set": update_data},
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    updated_category = await db["categories"].find_one({"id": category_id})
+    return serialize_category(updated_category)
+
+@router.delete("/categories/{category_id}")
+async def delete_category(category_id: str, db = Depends(get_database)):
+    result = await db["categories"].delete_one({"id": category_id})
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    await db["products"].update_many(
+        {"category_id": category_id},
+        {"$set": {"category_id": "", "product_type": ""}},
+    )
+
+    return {"ok": True}
