@@ -17,9 +17,43 @@ def serialize_product(product):
     return product
 
 def serialize_category(category):
+    if category and category.get("name"):
+        category["id"] = category["name"].strip()
     if category and "_id" in category:
         category.pop("_id", None)
     return category
+
+async def category_name_by_id(db):
+    categories = await db["categories"].find().to_list(100)
+    return {
+        category.get("id"): category.get("name")
+        for category in categories
+        if category.get("id") and category.get("name")
+    }
+
+def serialize_product_with_category_names(product, category_names):
+    serialized = serialize_product(product)
+    if not serialized:
+        return serialized
+
+    category_id = serialized.get("category_id")
+    if category_id in category_names:
+        serialized["category_id"] = category_names[category_id]
+
+    product_type = serialized.get("product_type")
+    if product_type in category_names:
+        serialized["product_type"] = category_names[product_type]
+
+    return serialized
+
+def make_category_id(name: str) -> str:
+    category_id = name.strip()
+    if not category_id:
+        raise HTTPException(status_code=422, detail="Category name is required")
+    return category_id
+
+def category_lookup_filter(category_id: str):
+    return {"$or": [{"id": category_id}, {"name": category_id}]}
 
 def product_lookup_filter(product_id: str):
     if ObjectId.is_valid(product_id):
@@ -98,7 +132,8 @@ async def upload_to_cloudinary(file: UploadFile, folder: str, public_id_prefix: 
 @router.get("/", response_model=List[ProductModel])
 async def get_products(db = Depends(get_database)):
     products = await db["products"].find().to_list(100)
-    return [serialize_product(product) for product in products]
+    category_names = await category_name_by_id(db)
+    return [serialize_product_with_category_names(product, category_names) for product in products]
 
 @router.post("/", response_model=ProductModel)
 async def create_product(product: ProductModel = Body(...), db = Depends(get_database)):
@@ -149,7 +184,7 @@ async def get_product_by_barcode(barcode_id: str, db = Depends(get_database)):
     product = await db["products"].find_one({"barcode": barcode_id})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    return serialize_product(product)
+    return serialize_product_with_category_names(product, await category_name_by_id(db))
 
 @router.get("/categories", response_model=List[CategoryModel])
 async def get_categories(db = Depends(get_database)):
@@ -160,7 +195,9 @@ async def get_categories(db = Depends(get_database)):
 @router.post("/categories", response_model=CategoryModel)
 async def create_category(category: CategoryModel = Body(...), db = Depends(get_database)):
     category_dict = category.model_dump()
-    category_dict["id"] = await make_unique_category_id(db, category.name)
+    category_dict["id"] = make_category_id(category.name)
+    if await db["categories"].find_one(category_lookup_filter(category_dict["id"])):
+        raise HTTPException(status_code=409, detail="Category already exists")
     category_dict["icon"] = category_dict.get("icon") or "tag.fill"
     category_dict["_id"] = category_dict["id"]
     await db["categories"].insert_one(category_dict)
@@ -177,27 +214,58 @@ async def upload_category_image(file: UploadFile = File(...)):
 @router.put("/categories/{category_id}", response_model=CategoryModel)
 async def update_category(category_id: str, category: CategoryUpdateModel = Body(...), db = Depends(get_database)):
     update_data = category.model_dump()
+    new_category_id = make_category_id(category.name)
+    existing_category = await db["categories"].find_one(category_lookup_filter(category_id))
+    if not existing_category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    duplicate_category = await db["categories"].find_one(category_lookup_filter(new_category_id))
+    if duplicate_category and duplicate_category.get("_id") != existing_category.get("_id"):
+        raise HTTPException(status_code=409, detail="Category already exists")
+
+    old_category_ids = {
+        value
+        for value in [existing_category.get("id"), existing_category.get("name"), category_id]
+        if value
+    }
+    update_data["id"] = new_category_id
+
     result = await db["categories"].update_one(
-        {"id": category_id},
+        {"_id": existing_category["_id"]},
         {"$set": update_data},
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    updated_category = await db["categories"].find_one({"id": category_id})
+    await db["products"].update_many(
+        {"category_id": {"$in": list(old_category_ids)}},
+        {"$set": {"category_id": new_category_id, "product_type": new_category_id}},
+    )
+
+    updated_category = await db["categories"].find_one({"_id": existing_category["_id"]})
     return serialize_category(updated_category)
 
 @router.delete("/categories/{category_id}/", include_in_schema=False)
 @router.delete("/categories/{category_id}")
 async def delete_category(category_id: str, db = Depends(get_database)):
-    result = await db["categories"].delete_one({"id": category_id})
+    existing_category = await db["categories"].find_one(category_lookup_filter(category_id))
+    if not existing_category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    old_category_ids = {
+        value
+        for value in [existing_category.get("id"), existing_category.get("name"), category_id]
+        if value
+    }
+
+    result = await db["categories"].delete_one({"_id": existing_category["_id"]})
 
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Category not found")
 
     await db["products"].update_many(
-        {"category_id": category_id},
+        {"category_id": {"$in": list(old_category_ids)}},
         {"$set": {"category_id": "", "product_type": ""}},
     )
 
