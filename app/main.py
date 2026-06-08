@@ -11,11 +11,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-ADMIN_WEB_DIR = BASE_DIR / "admin-web"
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = BACKEND_DIR.parent
+ADMIN_WEB_DIRS = [BACKEND_DIR / "admin-web", ROOT_DIR / "admin-web"]
+CUSTOMER_WEB_DIR = ROOT_DIR / "web"
 
-if ADMIN_WEB_DIR.exists():
-    app.mount("/admin", StaticFiles(directory=ADMIN_WEB_DIR, html=True), name="admin")
+for admin_web_dir in ADMIN_WEB_DIRS:
+    if admin_web_dir.exists():
+        app.mount("/admin", StaticFiles(directory=admin_web_dir, html=True), name="admin")
+        break
+
+if CUSTOMER_WEB_DIR.exists():
+    app.mount("/web", StaticFiles(directory=CUSTOMER_WEB_DIR, html=True), name="web")
 
 # CORS Middleware for iOS and web access
 app.add_middleware(
