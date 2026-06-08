@@ -1,12 +1,18 @@
 import base64
 import io
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from bson import ObjectId
+from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Depends
+from jose import JWTError, jwt
 from PIL import Image, ImageEnhance, ImageFilter
 from pydantic import BaseModel
+
+from app.api.auth import JWT_ALGORITHM, JWT_SECRET_KEY
+from app.database import get_database
 
 router = APIRouter()
 
@@ -27,20 +33,145 @@ async def recolor_car(
     file: UploadFile = File(...),
     color_name: str = Form(...),
     color_hex: str = Form(...),
+    authorization: Optional[str] = Header(None),
+    db=Depends(get_database),
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=422, detail="Only image files are allowed")
 
     image_bytes = await file.read()
+    image_info = get_image_info(image_bytes)
     provider = os.getenv("AI_IMAGE_PROVIDER", "local").lower()
     if provider == "openai":
-        return await recolor_with_openai(image_bytes, file.filename, file.content_type, color_name, color_hex)
-    if provider == "gemini":
-        return await recolor_with_gemini(image_bytes, file.content_type, color_name, color_hex)
-    if provider == "pollinations":
-        return await recolor_with_pollinations(image_bytes, file.filename, file.content_type, color_name, color_hex)
+        result = await recolor_with_openai(image_bytes, file.filename, file.content_type, color_name, color_hex)
+    elif provider == "gemini":
+        result = await recolor_with_gemini(image_bytes, file.content_type, color_name, color_hex)
+    elif provider == "pollinations":
+        result = await recolor_with_pollinations(image_bytes, file.filename, file.content_type, color_name, color_hex)
+    else:
+        provider = "local"
+        result = recolor_locally(image_bytes, color_name, color_hex)
 
-    return recolor_locally(image_bytes, color_name, color_hex)
+    record_id = await save_recolor_record(
+        db=db,
+        result=result,
+        user=await get_optional_user(authorization, db),
+        provider=provider,
+        color_name=color_name,
+        color_hex=color_hex,
+        file_name=file.filename,
+        content_type=file.content_type,
+        input_size_bytes=len(image_bytes),
+        input_width=image_info["width"],
+        input_height=image_info["height"],
+    )
+    result["record_id"] = record_id
+    return result
+
+
+@router.get("/recolor-records")
+async def list_recolor_records(db=Depends(get_database)):
+    records = await db["ai_recolor_records"].find().to_list(500)
+    records.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return [serialize_recolor_record(record) for record in records]
+
+
+async def get_optional_user(authorization: Optional[str], db):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+    except JWTError:
+        return None
+
+    if not user_id or not ObjectId.is_valid(user_id):
+        return None
+
+    return await db["users"].find_one({"_id": ObjectId(user_id)})
+
+
+async def save_recolor_record(
+    db,
+    result,
+    user,
+    provider: str,
+    color_name: str,
+    color_hex: str,
+    file_name: Optional[str],
+    content_type: str,
+    input_size_bytes: int,
+    input_width: Optional[int],
+    input_height: Optional[int],
+) -> str:
+    generated_info = get_image_info_from_base64(result["image_base64"])
+    record = {
+        "user_id": str(user["_id"]) if user else None,
+        "user_name": user.get("name") if user else "Misafir",
+        "user_email": user.get("email") if user else "",
+        "provider": provider,
+        "color_name": color_name,
+        "color_hex": color_hex,
+        "file_name": file_name or "vehicle",
+        "content_type": content_type,
+        "input_size_bytes": input_size_bytes,
+        "input_width": input_width,
+        "input_height": input_height,
+        "generated_mime_type": result.get("mime_type", "image/png"),
+        "generated_image_base64": result["image_base64"],
+        "generated_size_bytes": generated_info["size_bytes"],
+        "generated_width": generated_info["width"],
+        "generated_height": generated_info["height"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    insert_result = await db["ai_recolor_records"].insert_one(record)
+    return str(insert_result.inserted_id)
+
+
+def serialize_recolor_record(record):
+    return {
+        "id": str(record.get("_id")),
+        "user_id": record.get("user_id"),
+        "user_name": record.get("user_name") or "Misafir",
+        "user_email": record.get("user_email") or "",
+        "provider": record.get("provider") or "-",
+        "color_name": record.get("color_name") or "-",
+        "color_hex": record.get("color_hex") or "#FFFFFF",
+        "file_name": record.get("file_name") or "-",
+        "content_type": record.get("content_type") or "-",
+        "input_size_bytes": record.get("input_size_bytes"),
+        "input_width": record.get("input_width"),
+        "input_height": record.get("input_height"),
+        "generated_mime_type": record.get("generated_mime_type") or "image/png",
+        "generated_image_base64": record.get("generated_image_base64") or "",
+        "generated_size_bytes": record.get("generated_size_bytes"),
+        "generated_width": record.get("generated_width"),
+        "generated_height": record.get("generated_height"),
+        "created_at": record.get("created_at"),
+    }
+
+
+def get_image_info(image_bytes: bytes):
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        return {"width": image.width, "height": image.height}
+    except Exception:
+        return {"width": None, "height": None}
+
+
+def get_image_info_from_base64(image_base64: str):
+    try:
+        data = base64.b64decode(image_base64)
+        info = get_image_info(data)
+        return {
+            "size_bytes": len(data),
+            "width": info["width"],
+            "height": info["height"],
+        }
+    except Exception:
+        return {"size_bytes": None, "width": None, "height": None}
 
 
 async def recolor_with_openai(
