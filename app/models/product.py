@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import List, Optional
 
 class ProductModel(BaseModel):
     id: Optional[str] = Field(default=None, alias="_id")
@@ -12,6 +12,8 @@ class ProductModel(BaseModel):
     color_hex: str
     product_type: str
     barcode: Optional[str] = None
+    stock: int = 0
+    stock_count: int = 0
     in_stock: bool = True
 
     class Config:
@@ -27,6 +29,8 @@ class ProductModel(BaseModel):
                 "color_hex": "#2D4C7B",
                 "product_type": "interior",
                 "barcode": "123456789",
+                "stock": 12,
+                "stock_count": 12,
                 "in_stock": True
             }
         }
@@ -42,4 +46,15 @@ class ProductUpdateModel(BaseModel):
     color_hex: str = "#FFFFFF"
     product_type: str
     barcode: Optional[str] = None
+    stock: int = 0
+    stock_count: int = 0
     in_stock: bool = True
+
+
+class PurchaseItemModel(BaseModel):
+    product_id: str
+    quantity: int
+
+
+class PurchaseModel(BaseModel):
+    items: List[PurchaseItemModel]

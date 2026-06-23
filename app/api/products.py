@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
 from typing import List
 from app.database import get_database
 from app.models.category import CategoryModel, CategoryUpdateModel
-from app.models.product import ProductModel, ProductUpdateModel
+from app.models.product import ProductModel, ProductUpdateModel, PurchaseModel
 from bson import ObjectId
 
 router = APIRouter()
@@ -14,6 +14,11 @@ router = APIRouter()
 def serialize_product(product):
     if product and "_id" in product:
         product["_id"] = str(product["_id"])
+    if product is not None:
+        stock = normalize_stock_value(product)
+        product["stock"] = stock
+        product["stock_count"] = stock
+        product["in_stock"] = stock > 0
     return product
 
 def serialize_category(category):
@@ -61,6 +66,24 @@ def product_lookup_filter(product_id: str):
     if product_id.lower() in {"none", "null"}:
         return {"_id": None}
     return {"_id": product_id}
+
+def get_product_stock(product):
+    if not product:
+        return 0
+    return normalize_stock_value(product)
+
+def normalize_stock_value(product):
+    for key in ("stock", "stock_count"):
+        if product.get(key) is not None:
+            return max(0, int(product.get(key) or 0))
+    return 1 if product.get("in_stock", True) else 0
+
+def apply_stock_fields(product_data):
+    stock = normalize_stock_value(product_data)
+    product_data["stock"] = stock
+    product_data["stock_count"] = stock
+    product_data["in_stock"] = stock > 0
+    return product_data
 
 def slugify(value: str) -> str:
     value = value.strip().lower()
@@ -138,6 +161,7 @@ async def get_products(db = Depends(get_database)):
 @router.post("/", response_model=ProductModel)
 async def create_product(product: ProductModel = Body(...), db = Depends(get_database)):
     product_dict = product.model_dump(by_alias=True, exclude_none=True)
+    product_dict = apply_stock_fields(product_dict)
 
     if "_id" in product_dict:
         if not ObjectId.is_valid(product_dict["_id"]):
@@ -152,10 +176,12 @@ async def create_product(product: ProductModel = Body(...), db = Depends(get_dat
 @router.put("/{product_id}", response_model=ProductModel)
 async def update_product(product_id: str, product: ProductUpdateModel = Body(...), db = Depends(get_database)):
     lookup_filter = product_lookup_filter(product_id)
+    update_data = product.model_dump()
+    update_data = apply_stock_fields(update_data)
 
     result = await db["products"].update_one(
         lookup_filter,
-        {"$set": product.model_dump()},
+        {"$set": update_data},
     )
 
     if result.matched_count == 0:
@@ -163,6 +189,39 @@ async def update_product(product_id: str, product: ProductUpdateModel = Body(...
 
     updated_product = await db["products"].find_one(lookup_filter)
     return serialize_product(updated_product)
+
+@router.post("/purchase")
+async def purchase_products(purchase: PurchaseModel = Body(...), db = Depends(get_database)):
+    if not purchase.items:
+        raise HTTPException(status_code=422, detail="Sepet boş")
+
+    item_quantities = {}
+    for item in purchase.items:
+        quantity = max(0, int(item.quantity or 0))
+        if quantity > 0:
+            item_quantities[item.product_id] = item_quantities.get(item.product_id, 0) + quantity
+
+    normalized_items = []
+    for product_id, quantity in item_quantities.items():
+        product = await db["products"].find_one(product_lookup_filter(product_id))
+        if not product:
+            raise HTTPException(status_code=404, detail="Ürün bulunamadı")
+        if get_product_stock(product) < quantity:
+            raise HTTPException(status_code=409, detail="Stokta tükenmiştir")
+        normalized_items.append((product, quantity))
+
+    if not normalized_items:
+        raise HTTPException(status_code=422, detail="Sepet boş")
+
+    for product, quantity in normalized_items:
+        current_stock = get_product_stock(product)
+        new_stock = max(0, current_stock - quantity)
+        await db["products"].update_one(
+            {"_id": product["_id"]},
+            {"$set": {"stock": new_stock, "stock_count": new_stock, "in_stock": new_stock > 0}},
+        )
+
+    return {"ok": True}
 
 @router.delete("/{product_id}/", include_in_schema=False)
 @router.delete("/{product_id}")

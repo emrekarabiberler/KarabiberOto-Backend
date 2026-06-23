@@ -7,7 +7,7 @@ load_dotenv()
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "karabiber_oto")
 
-# Simple check to see if we should use Mock (for testing environments without MongoDB)
+# MongoDB olmayan test ortamlarında Mock kullanılıp kullanılmayacağını kontrol eder
 USE_MOCK = os.getenv("USE_MOCK", "false").lower() == "true"
 
 class MockCollection:
@@ -34,6 +34,16 @@ class MockCollection:
                     break
             if match: return item
         return None
+    async def update_one(self, query, update):
+        item = await self.find_one(query)
+        class Result:
+            def __init__(self, matched_count):
+                self.matched_count = matched_count
+        if not item:
+            return Result(0)
+        if "$set" in update:
+            item.update(update["$set"])
+        return Result(1)
 
 class MockDatabase:
     def __init__(self):

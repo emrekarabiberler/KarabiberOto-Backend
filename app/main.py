@@ -24,7 +24,7 @@ for admin_web_dir in ADMIN_WEB_DIRS:
 if CUSTOMER_WEB_DIR.exists():
     app.mount("/web", StaticFiles(directory=CUSTOMER_WEB_DIR, html=True), name="web")
 
-# CORS Middleware for iOS and web access
+# iOS ve web erişimi için CORS ara katmanı
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,7 +33,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Include Routers
+# Routerları ekle
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(products.router, prefix="/products", tags=["Products & Barcode"])
 app.include_router(ai.router, prefix="/ai", tags=["AI Services"])

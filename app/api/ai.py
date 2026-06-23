@@ -25,7 +25,7 @@ async def chat(request: ChatRequest):
 
 @router.post("/segment-vehicle")
 async def segment_vehicle(file: UploadFile = File(...)):
-    # This would use rembg or a similar library to process the image
+    # Bu bölüm görseli işlemek için rembg veya benzer bir kütüphane kullanabilir
     return {"message": "Image received and mask would be generated here", "filename": file.filename}
 
 @router.post("/recolor-car")
