@@ -27,7 +27,7 @@ if CUSTOMER_WEB_DIR.exists():
 # iOS ve web erişimi için CORS ara katmanı
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https?://([a-z0-9-]+\.)?karabiberoto\.com\.tr|http://localhost(:[0-9]+)?|http://127\.0\.0\.1(:[0-9]+)?",
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
